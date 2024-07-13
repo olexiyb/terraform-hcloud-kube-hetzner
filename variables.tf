@@ -4,6 +4,20 @@ variable "hcloud_token" {
   sensitive   = true
 }
 
+variable "hcloud_robot_user" {
+  description = "Hetzner Robot User."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "hcloud_robot_password" {
+  description = "Hetzner Robot Password."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "k3s_token" {
   description = "k3s master token (must match when restoring a cluster)."
   type        = string
@@ -80,6 +94,19 @@ variable "network_region" {
   type        = string
   default     = "eu-central"
 }
+
+variable "vswitch_id" {
+  description = "vSwitch to connect to cloud."
+  type        = string
+  default     = null
+}
+
+variable "server_numbers" {
+  type = list(number)
+  description = "List of Hetzner server numbers"
+  default = []
+}
+
 variable "existing_network_id" {
   # Unfortunately, we need this to be a list or null. If we only use a plain
   # string here, and check that existing_network_id is null, terraform will

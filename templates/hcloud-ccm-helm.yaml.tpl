@@ -28,3 +28,12 @@ spec:
         value: "${!using_klipper_lb}"
       HCLOUD_LOAD_BALANCERS_DISABLE_PRIVATE_INGRESS:
         value: "true"
+    %{~ if using_hcloud_robot ~}
+      # see https://github.com/hetznercloud/hcloud-cloud-controller-manager/issues/630#issuecomment-2039136344
+      HCLOUD_NETWORK_ROUTES_ENABLED:
+        value: "false"
+      HCLOUD_DEBUG:
+        value: "1"
+    %{~ endif ~}
+    robot:
+      enabled: ${using_hcloud_robot}

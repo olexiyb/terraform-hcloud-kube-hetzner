@@ -168,6 +168,8 @@ resource "null_resource" "kustomization" {
       coalesce(var.longhorn_version, "N/A"),
       coalesce(var.rancher_version, "N/A"),
       coalesce(var.sys_upgrade_controller_version, "N/A"),
+      coalesce(var.hcloud_robot_user, "N/A"),
+      coalesce(var.hcloud_robot_password, "N/A"),
     ])
     options = join("\n", [
       for option, value in local.kured_options : "${option}=${value}"
@@ -244,6 +246,7 @@ resource "null_resource" "kustomization" {
       {
         version             = coalesce(local.ccm_version, "*")
         using_klipper_lb    = local.using_klipper_lb
+        using_hcloud_robot  = local.using_hcloud_robot
         default_lb_location = var.load_balancer_location
 
       }
@@ -363,7 +366,7 @@ resource "null_resource" "kustomization" {
   provisioner "remote-exec" {
     inline = [
       "set -ex",
-      "kubectl -n kube-system create secret generic hcloud --from-literal=token=${var.hcloud_token} --from-literal=network=${data.hcloud_network.k3s.name} --dry-run=client -o yaml | kubectl apply -f -",
+      "kubectl -n kube-system create secret generic hcloud --from-literal=token=${var.hcloud_token} --from-literal=network=${data.hcloud_network.k3s.name} --from-literal=robot-user=${var.hcloud_robot_user} --from-literal=robot-password=${var.hcloud_robot_password} --dry-run=client -o yaml | kubectl apply -f -",
       "kubectl -n kube-system create secret generic hcloud-csi --from-literal=token=${var.hcloud_token} --dry-run=client -o yaml | kubectl apply -f -",
     ]
   }
