@@ -18,8 +18,8 @@ terraform {
       version = ">= 0.1.2"
     }
     hetzner-robot = {
-      source  = "strng-solutions/hetzner-robot"
-      version = "3.4.0"
+      source  = "silenium-dev/hetzner-robot"
+      version = ">= 3.5.0"
     }
   }
 }
