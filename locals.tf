@@ -461,7 +461,7 @@ env:
   HCLOUD_NETWORK_ROUTES_ENABLED:
     value: "false"
   HCLOUD_DEBUG:
-    value: "1"
+    value: "0"
 %{endif~}
 robot:
   enabled: ${local.using_hcloud_robot}
