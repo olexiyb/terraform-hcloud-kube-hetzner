@@ -444,6 +444,8 @@ args:
 %{if local.using_klipper_lb~}
   secure-port: 10288
 %{endif~}
+nodeSelector:
+  node-role.kubernetes.io/master: "true"
 networking:
   enabled: true
   clusterCIDR: ${var.cluster_ipv4_cidr}
