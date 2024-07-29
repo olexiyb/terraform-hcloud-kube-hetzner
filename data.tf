@@ -1,5 +1,5 @@
 data "github_release" "hetzner_csi" {
-  count       = var.hetzner_csi_version == null && !var.disable_hetzner_csi ? 1 : 0
+  count       = var.hetzner_csi_version == null ? 1 : 0
   repository  = "csi-driver"
   owner       = "hetznercloud"
   retrieve_by = "latest"
