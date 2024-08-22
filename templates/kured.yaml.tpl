@@ -18,6 +18,7 @@ spec:
         - name: kured
           command:
             - /usr/bin/kured
+            - --annotate-nodes
             %{~ for key, value in options ~}
             - --${key}=${value}
             %{~ endfor ~}
