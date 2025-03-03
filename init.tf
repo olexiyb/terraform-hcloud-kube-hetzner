@@ -124,11 +124,13 @@ resource "null_resource" "kustomization" {
       local.longhorn_values,
       local.csi_driver_smb_values,
       local.cert_manager_values,
-      local.rancher_values
+      local.rancher_values,
+      local.hetzner_csi_values
     ])
     # Redeploy when versions of addons need to be updated
     versions = join("\n", [
       coalesce(var.initial_k3s_channel, "N/A"),
+      coalesce(var.install_k3s_version, "N/A"),
       coalesce(var.cluster_autoscaler_version, "N/A"),
       coalesce(var.hetzner_ccm_version, "N/A"),
       coalesce(var.hetzner_csi_version, "N/A"),
@@ -235,6 +237,7 @@ resource "null_resource" "kustomization" {
       "${path.module}/templates/plans.yaml.tpl",
       {
         channel          = var.initial_k3s_channel
+        version          = var.install_k3s_version
         disable_eviction = !var.system_upgrade_enable_eviction
         drain            = var.system_upgrade_use_drain
     })
@@ -255,13 +258,18 @@ resource "null_resource" "kustomization" {
     destination = "/var/post_install/longhorn.yaml"
   }
 
-  # Upload the csi-driver-smb config
+  # Upload the csi-driver config (ignored if csi is disabled)
   provisioner "file" {
     content = templatefile(
       "${path.module}/templates/hcloud-csi.yaml.tpl",
       {
-        version = local.csi_version
-        values  = indent(4, trimspace(var.hetzner_csi_values))
+        # local.csi_version is null when disable_hetzner_csi = true
+        # In that case, we set it to "*" so that the templatefile() can handle it,
+        # because tempaltefile() does not support null values. Moreover, coalesce() doesn't
+        # support empty strings either.
+        # The entire file is ignored by kustomization.yaml anyway if disable_hetzner_csi = true.
+        version = coalesce(local.csi_version, "*")
+        values  = indent(4, trimspace(local.hetzner_csi_values))
     })
     destination = "/var/post_install/hcloud-csi.yaml"
   }

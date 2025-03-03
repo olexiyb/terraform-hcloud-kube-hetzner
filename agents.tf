@@ -130,7 +130,7 @@ resource "null_resource" "agents" {
 }
 
 resource "hcloud_volume" "longhorn_volume" {
-  for_each = { for k, v in local.agent_nodes : k => v if((v.longhorn_volume_size >= 10) && (v.longhorn_volume_size <= 10000) && var.enable_longhorn) }
+  for_each = { for k, v in local.agent_nodes : k => v if((v.longhorn_volume_size >= 10) && (v.longhorn_volume_size <= 10240) && var.enable_longhorn) }
 
   labels = {
     provisioner = "terraform"
@@ -146,7 +146,7 @@ resource "hcloud_volume" "longhorn_volume" {
 }
 
 resource "null_resource" "configure_longhorn_volume" {
-  for_each = { for k, v in local.agent_nodes : k => v if((v.longhorn_volume_size >= 10) && (v.longhorn_volume_size <= 10000) && var.enable_longhorn) }
+  for_each = { for k, v in local.agent_nodes : k => v if((v.longhorn_volume_size >= 10) && (v.longhorn_volume_size <= 10240) && var.enable_longhorn) }
 
   triggers = {
     agent_id = module.agents[each.key].id
@@ -192,6 +192,18 @@ resource "hcloud_floating_ip_assignment" "agents" {
 
   depends_on = [
     null_resource.agents
+  ]
+}
+
+resource "hcloud_rdns" "agents" {
+  for_each = { for k, v in local.agent_nodes : k => v if lookup(v, "floating_ip_rdns", null) != null }
+
+  floating_ip_id = hcloud_floating_ip.agents[each.key].id
+  ip_address     = hcloud_floating_ip.agents[each.key].ip_address
+  dns_ptr        = local.agent_nodes[each.key].floating_ip_rdns
+
+  depends_on = [
+    hcloud_floating_ip.agents
   ]
 }
 

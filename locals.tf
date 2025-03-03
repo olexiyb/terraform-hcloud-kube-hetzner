@@ -76,7 +76,8 @@ locals {
       [
         "ccm.yaml",
         "https://github.com/kubereboot/kured/releases/download/${local.kured_version}/kured-${local.kured_version}-dockerhub.yaml",
-        "https://raw.githubusercontent.com/rancher/system-upgrade-controller/9e7e45c1bdd528093da36be1f1f32472469005e6/manifests/system-upgrade-controller.yaml",
+        "https://github.com/rancher/system-upgrade-controller/releases/download/${var.sys_upgrade_controller_version}/system-upgrade-controller.yaml",
+        "https://github.com/rancher/system-upgrade-controller/releases/download/${var.sys_upgrade_controller_version}/crd.yaml"
       ],
       var.disable_hetzner_csi ? [] : ["hcloud-csi.yaml"],
       lookup(local.ingress_controller_install_resources, var.ingress_controller, []),
@@ -99,20 +100,6 @@ locals {
         patch = file("${path.module}/kustomize/system-upgrade-controller.yaml")
       },
       {
-        target = {
-          group     = "apps"
-          version   = "v1"
-          kind      = "Deployment"
-          name      = "system-upgrade-controller"
-          namespace = "system-upgrade"
-        }
-        patch = <<-EOF
-          - op: replace
-            path: /spec/template/spec/containers/0/image
-            value: rancher/system-upgrade-controller:v0.13.4
-        EOF
-      },
-      {
         path = "kured.yaml"
       },
       {
@@ -124,12 +111,21 @@ locals {
   apply_k3s_selinux = ["/sbin/semodule -v -i /usr/share/selinux/packages/k3s.pp"]
   swap_node_label   = ["node.kubernetes.io/server-swap=enabled"]
 
-  install_k3s_server = concat(local.common_pre_install_k3s_commands, [
-    "curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_CHANNEL=${var.initial_k3s_channel} INSTALL_K3S_EXEC='server ${var.k3s_exec_server_args}' sh -"
-  ], (var.disable_selinux ? [] : local.apply_k3s_selinux), local.common_post_install_k3s_commands)
-  install_k3s_agent = concat(local.common_pre_install_k3s_commands, [
-    "curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_CHANNEL=${var.initial_k3s_channel} INSTALL_K3S_EXEC='agent ${var.k3s_exec_agent_args}' sh -"
-  ], (var.disable_selinux ? [] : local.apply_k3s_selinux), local.common_post_install_k3s_commands)
+  k3s_install_command = "curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_SELINUX_RPM=true %{if var.install_k3s_version == ""}INSTALL_K3S_CHANNEL=${var.initial_k3s_channel}%{else}INSTALL_K3S_VERSION=${var.install_k3s_version}%{endif} INSTALL_K3S_EXEC='%s' sh -"
+
+  install_k3s_server = concat(
+    local.common_pre_install_k3s_commands,
+    [format(local.k3s_install_command, "server ${var.k3s_exec_server_args}")],
+    var.disable_selinux ? [] : local.apply_k3s_selinux,
+    local.common_post_install_k3s_commands
+  )
+
+  install_k3s_agent = concat(
+    local.common_pre_install_k3s_commands,
+    [format(local.k3s_install_command, "agent ${var.k3s_exec_agent_args}")],
+    var.disable_selinux ? [] : local.apply_k3s_selinux,
+    local.common_post_install_k3s_commands
+  )
 
   control_plane_nodes = merge([
     for pool_index, nodepool_obj in var.control_plane_nodepools : {
@@ -161,6 +157,7 @@ locals {
         server_type : nodepool_obj.server_type,
         longhorn_volume_size : coalesce(nodepool_obj.longhorn_volume_size, 0),
         floating_ip : lookup(nodepool_obj, "floating_ip", false),
+        floating_ip_rdns : lookup(nodepool_obj, "floating_ip_rdns", false),
         location : nodepool_obj.location,
         labels : concat(local.default_agent_labels, nodepool_obj.swap_size != "" ? local.swap_node_label : [], nodepool_obj.labels),
         taints : concat(local.default_agent_taints, nodepool_obj.taints),
@@ -186,6 +183,7 @@ locals {
           server_type : nodepool_obj.server_type,
           longhorn_volume_size : coalesce(nodepool_obj.longhorn_volume_size, 0),
           floating_ip : lookup(nodepool_obj, "floating_ip", false),
+          floating_ip_rdns : lookup(nodepool_obj, "floating_ip_rdns", false),
           location : nodepool_obj.location,
           labels : concat(local.default_agent_labels, nodepool_obj.swap_size != "" ? local.swap_node_label : [], nodepool_obj.labels),
           taints : concat(local.default_agent_taints, nodepool_obj.taints),
@@ -224,7 +222,7 @@ locals {
 
   # if we are in a single cluster config, we use the default klipper lb instead of Hetzner LB
   control_plane_count    = sum([for v in var.control_plane_nodepools : v.count])
-  agent_count            = sum([for v in var.agent_nodepools : length(coalesce(v.nodes, {})) + coalesce(v.count, 0)])
+  agent_count            = length(var.agent_nodepools) > 0 ? sum([for v in var.agent_nodepools : length(coalesce(v.nodes, {})) + coalesce(v.count, 0)]) : 0
   autoscaler_max_count   = length(var.autoscaler_nodepools) > 0 ? sum([for v in var.autoscaler_nodepools : v.max_nodes]) : 0
   is_single_node_cluster = (local.control_plane_count + local.agent_count + local.autoscaler_max_count) == 1
 
@@ -282,6 +280,17 @@ locals {
         source_ips  = var.firewall_ssh_source
       },
     ],
+    var.ssh_port != null &&
+    var.firewall_ssh_source == null ? [
+      # Allow all traffic to the ssh port
+      {
+        description = "Allow Incoming SSH Traffic"
+        direction   = "in"
+        protocol    = "tcp"
+        port        = var.ssh_port
+        source_ips  = ["0.0.0.0/0", "::/0"]
+      },
+    ] : [],
     var.firewall_kube_api_source == null ? [] : [
       {
         description = "Allow Incoming Requests to Kube API Server"
@@ -436,6 +445,8 @@ locals {
   kube_controller_manager_arg = "flex-volume-plugin-dir=/var/lib/kubelet/volumeplugins"
   flannel_iface               = "eth1"
 
+  kube_apiserver_arg = var.authentication_config != "" ? ["authentication-config=/etc/rancher/k3s/authentication_config.yaml"] : []
+
   # Not to be confused with the other helm values, this is used for the calico.yaml kustomize patch
   # It also serves as a stub for a potential future use via helm values
   ccm_values = var.ccm_values != "" ? var.ccm_values : <<EOT
@@ -581,6 +592,9 @@ persistence:
   csi_driver_smb_values = var.csi_driver_smb_values != "" ? var.csi_driver_smb_values : <<EOT
   EOT
 
+  hetzner_csi_values = var.hetzner_csi_values != "" ? var.hetzner_csi_values : <<EOT
+  EOT
+
   nginx_values = var.nginx_values != "" ? var.nginx_values : <<EOT
 controller:
   watchIngressWithoutClass: "true"
@@ -688,8 +702,11 @@ service:
 ports:
   web:
 %{if var.traefik_redirect_to_https~}
-    redirectTo:
-      port: websecure
+    redirections:
+      entryPoint:
+        to: websecure
+        scheme: https
+        permanent: true
 %{endif~}
 %{if !local.using_klipper_lb~}
     proxyProtocol:
@@ -761,11 +778,11 @@ additionalArguments:
 %{if var.traefik_resource_limits~}
 resources:
   requests:
-    cpu: "100m"
-    memory: "50Mi"
+    cpu: "${var.traefik_resource_values.requests.cpu}"
+    memory: "${var.traefik_resource_values.requests.memory}"
   limits:
-    cpu: "300m"
-    memory: "150Mi"
+    cpu: "${var.traefik_resource_values.limits.cpu}"
+    memory: "${var.traefik_resource_values.limits.memory}"
 %{endif~}
 %{if var.traefik_autoscaling~}
 autoscaling:
@@ -786,7 +803,9 @@ global:
   EOT
 
 cert_manager_values = var.cert_manager_values != "" ? var.cert_manager_values : <<EOT
-installCRDs: true
+crds:
+  enabled: true
+  keep: true
   EOT
 
 kured_options = merge({
@@ -839,6 +858,28 @@ else
 fi
 EOF
 
+k3s_authentication_config_update_script = <<EOF
+DATE=`date +%Y-%m-%d_%H-%M-%S`
+if cmp -s /tmp/authentication_config.yaml /etc/rancher/k3s/authentication_config.yaml; then
+  echo "No update required to the authentication_config.yaml file"
+else
+  if [ -f "/etc/rancher/k3s/authentication_config.yaml" ]; then
+    echo "Backing up /etc/rancher/k3s/authentication_config.yaml to /tmp/authentication_config_$DATE.yaml"
+    cp /etc/rancher/k3s/authentication_config.yaml /tmp/authentication_config_$DATE.yaml
+  fi
+  echo "Updated authentication_config.yaml detected, restart of k3s service required"
+  cp /tmp/authentication_config.yaml /etc/rancher/k3s/authentication_config.yaml
+  if systemctl is-active --quiet k3s; then
+    systemctl restart k3s || (echo "Error: Failed to restart k3s. Restoring /etc/rancher/k3s/authentication_config.yaml from backup" && cp /tmp/authentication_config_$DATE.yaml /etc/rancher/k3s/authentication_config.yaml && systemctl restart k3s)
+  elif systemctl is-active --quiet k3s-agent; then
+    systemctl restart k3s-agent || (echo "Error: Failed to restart k3s-agent. Restoring /etc/rancher/k3s/authentication_config.yaml from backup" && cp /tmp/authentication_config_$DATE.yaml /etc/rancher/k3s/authentication_config.yaml && systemctl restart k3s-agent)
+  else
+    echo "No active k3s or k3s-agent service found"
+  fi
+  echo "k3s service or k3s-agent service (re)started successfully"
+fi
+EOF
+
 cloudinit_write_files_common = <<EOT
 # Script to rename the private interface to eth1 and unify NetworkManager connection naming
 - path: /etc/cloud/rename_interface.sh
@@ -859,15 +900,36 @@ cloudinit_write_files_common = <<EOT
     ip link set $INTERFACE name eth1
     ip link set eth1 up
 
-    eth0_connection=$(nmcli -g GENERAL.CONNECTION device show eth0)
-    nmcli connection modify "$eth0_connection" \
-      con-name eth0 \
-      connection.interface-name eth0
+    myrepeat () {
+        # Current time + 300 seconds (5 minutes)
+        local END_SECONDS=$((SECONDS + 300))
+        while true; do
+            >&2 echo "loop"
+            if (( "$SECONDS" > "$END_SECONDS" )); then
+                >&2 echo "timeout reached"
+                exit 1
+            fi
+            # run command and check return code
+            if $@ ; then
+                >&2 echo "break"
+                break
+            else
+                >&2 echo "got failure exit code, repeating"
+                sleep 0.5
+            fi
+        done
+    }
 
-    eth1_connection=$(nmcli -g GENERAL.CONNECTION device show eth1)
-    nmcli connection modify "$eth1_connection" \
-      con-name eth1 \
-      connection.interface-name eth1
+    myrename () {
+      local eth="$1"
+      local eth_connection=$(nmcli -g GENERAL.CONNECTION device show $eth || echo '')
+      nmcli connection modify "$eth_connection" \
+        con-name $eth \
+        connection.interface-name $eth
+    }
+
+    myrepeat myrename eth0
+    myrepeat myrename eth1
 
     systemctl restart NetworkManager
   permissions: "0744"
@@ -1023,11 +1085,6 @@ cloudinit_runcmd_common = <<EOT
 
 # Disable rebootmgr service as we use kured instead
 - [systemctl, disable, '--now', 'rebootmgr.service']
-
-%{if length(var.dns_servers) > 0}
-# Set the dns manually
-- [systemctl, 'reload', 'NetworkManager']
-%{endif}
 
 # Bounds the amount of logs that can survive on the system
 - [sed, '-i', 's/#SystemMaxUse=/SystemMaxUse=3G/g', /etc/systemd/journald.conf]
