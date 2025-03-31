@@ -153,7 +153,7 @@ variable "disable_ipv4" {
 
 variable "disable_ipv6" {
   type        = bool
-  default     = false
+  default     = true
   description = "Whether to disable ipv4 on the server. If you disable ipv4 and ipv6 make sure you have an access to your private network."
 }
 
