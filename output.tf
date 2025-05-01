@@ -137,6 +137,12 @@ output "traefik_values" {
   sensitive   = true
 }
 
+output "rancher_values" {
+  description = "Helm values.yaml used for Traefik"
+  value       = local.rancher_values
+  sensitive   = true
+}
+
 output "nginx_values" {
   description = "Helm values.yaml used for nginx-ingress"
   value       = local.nginx_values
