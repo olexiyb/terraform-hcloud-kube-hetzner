@@ -97,7 +97,7 @@ output "kubeconfig" {
 }
 
 output "kustomization_backup" {
-  value       = local_file.kustomization_backup.content
+  value       = local_file.kustomization_backup[0].content
   sensitive = false
 }
 
