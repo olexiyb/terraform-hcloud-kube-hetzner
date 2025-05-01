@@ -96,6 +96,11 @@ output "kubeconfig" {
   sensitive   = true
 }
 
+output "kustomization_backup" {
+  value       = local_file.kustomization_backup.content
+  sensitive = false
+}
+
 output "kubeconfig_data" {
   description = "Structured kubeconfig data to supply to other providers"
   value       = local.kubeconfig_data
