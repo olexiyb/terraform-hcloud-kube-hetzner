@@ -756,12 +756,6 @@ variable "cilium_routing_mode" {
   }
 }
 
-variable "ccm_values" {
-  type        = string
-  default     = ""
-  description = "Additional helm values file to pass to hcloud-cloud-controller-manager as 'valuesContent' at the HelmChart."
-}
-
 variable "cilium_values" {
   type        = string
   default     = ""
