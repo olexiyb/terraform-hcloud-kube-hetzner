@@ -19,13 +19,37 @@ resource "hcloud_load_balancer" "cluster" {
   }
 }
 
+resource "hcloud_load_balancer_network" "cluster" {
+  count = local.has_external_load_balancer ? 0 : 1
+
+  load_balancer_id = hcloud_load_balancer.cluster.*.id[0]
+  subnet_id        = hcloud_network_subnet.agent.*.id[0]
+}
+
+resource "hcloud_load_balancer_target" "cluster" {
+  count = local.has_external_load_balancer ? 0 : 1
+
+  depends_on       = [hcloud_load_balancer_network.cluster]
+  type             = "label_selector"
+  load_balancer_id = hcloud_load_balancer.cluster.*.id[0]
+  label_selector   = join(",", [for k, v in merge(local.labels, local.labels_control_plane_node, local.labels_agent_node) : "${k}=${v}"])
+  use_private_ip   = true
+}
+
+locals {
+  first_control_plane_ip = coalesce(
+    module.control_planes[keys(module.control_planes)[0]].ipv4_address,
+    module.control_planes[keys(module.control_planes)[0]].ipv6_address,
+    module.control_planes[keys(module.control_planes)[0]].private_ipv4_address
+  )
+}
 
 resource "null_resource" "first_control_plane" {
   connection {
     user           = "root"
     private_key    = var.ssh_private_key
     agent_identity = local.ssh_agent_identity
-    host           = module.control_planes[keys(module.control_planes)[0]].ipv4_address
+    host           = local.first_control_plane_ip
     port           = var.ssh_port
   }
 
@@ -49,13 +73,13 @@ resource "null_resource" "first_control_plane" {
           node-label                  = local.control_plane_nodes[keys(module.control_planes)[0]].labels
           cluster-cidr                = var.cluster_ipv4_cidr
           service-cidr                = var.service_ipv4_cidr
-          cluster-dns                 = var.cluster_dns_ipv4
+          cluster-dns                 = local.cluster_dns_ipv4
         },
         lookup(local.cni_k3s_settings, var.cni_plugin, {}),
         var.use_control_plane_lb ? {
           tls-san = concat([hcloud_load_balancer.control_plane.*.ipv4[0], hcloud_load_balancer_network.control_plane.*.ip[0]], var.additional_tls_sans)
           } : {
-          tls-san = concat([module.control_planes[keys(module.control_planes)[0]].ipv4_address], var.additional_tls_sans)
+          tls-san = concat([local.first_control_plane_ip], var.additional_tls_sans)
         },
         local.etcd_s3_snapshots,
         var.control_planes_custom_config,
@@ -124,11 +148,13 @@ resource "null_resource" "kustomization" {
       local.longhorn_values,
       local.csi_driver_smb_values,
       local.cert_manager_values,
-      local.rancher_values
+      local.rancher_values,
+      local.hetzner_csi_values
     ])
     # Redeploy when versions of addons need to be updated
     versions = join("\n", [
       coalesce(var.initial_k3s_channel, "N/A"),
+      coalesce(var.install_k3s_version, "N/A"),
       coalesce(var.cluster_autoscaler_version, "N/A"),
       coalesce(var.hetzner_ccm_version, "N/A"),
       coalesce(var.hetzner_csi_version, "N/A"),
@@ -138,19 +164,25 @@ resource "null_resource" "kustomization" {
       coalesce(var.traefik_version, "N/A"),
       coalesce(var.nginx_version, "N/A"),
       coalesce(var.haproxy_version, "N/A"),
+      coalesce(var.cert_manager_version, "N/A"),
+      coalesce(var.csi_driver_smb_version, "N/A"),
+      coalesce(var.longhorn_version, "N/A"),
+      coalesce(var.rancher_version, "N/A"),
+      coalesce(var.sys_upgrade_controller_version, "N/A"),
       coalesce(var.hcloud_robot_user, "N/A"),
       coalesce(var.hcloud_robot_password, "N/A"),
     ])
     options = join("\n", [
       for option, value in local.kured_options : "${option}=${value}"
     ])
+    ccm_use_helm = var.hetzner_ccm_use_helm
   }
 
   connection {
     user           = "root"
     private_key    = var.ssh_private_key
     agent_identity = local.ssh_agent_identity
-    host           = module.control_planes[keys(module.control_planes)[0]].ipv4_address
+    host           = local.first_control_plane_ip
     port           = var.ssh_port
   }
 
@@ -196,15 +228,29 @@ resource "null_resource" "kustomization" {
     destination = "/var/post_install/haproxy_ingress.yaml"
   }
 
-  # Upload the CCM patch config
+  # Upload the CCM patch config using the legacy deployment
   provisioner "file" {
-    content = templatefile(
+    content = var.hetzner_ccm_use_helm ? "" : templatefile(
       "${path.module}/templates/ccm.yaml.tpl",
       {
         version = var.hetzner_ccm_version
         values  = indent(4, trimspace(local.ccm_values))
     })
     destination = "/var/post_install/ccm.yaml"
+  }
+
+  # Upload the CCM patch config using helm
+  provisioner "file" {
+    content = var.hetzner_ccm_use_helm ? templatefile(
+      "${path.module}/templates/hcloud-ccm-helm.yaml.tpl",
+      {
+        version             = coalesce(local.ccm_version, "*")
+        using_klipper_lb    = local.using_klipper_lb
+        default_lb_location = var.load_balancer_location
+
+      }
+    ) : ""
+    destination = "/var/post_install/hcloud-ccm-helm.yaml"
   }
 
   # Upload the calico patch config, for the kustomization of the calico manifest
@@ -235,6 +281,7 @@ resource "null_resource" "kustomization" {
       "${path.module}/templates/plans.yaml.tpl",
       {
         channel          = var.initial_k3s_channel
+        version          = var.install_k3s_version
         disable_eviction = !var.system_upgrade_enable_eviction
         drain            = var.system_upgrade_use_drain
     })
@@ -255,14 +302,15 @@ resource "null_resource" "kustomization" {
     destination = "/var/post_install/longhorn.yaml"
   }
 
-  # Upload the csi-driver-smb config
+  # Upload the csi-driver config (ignored if csi is disabled)
   provisioner "file" {
-    content = templatefile(
+    content = var.disable_hetzner_csi ? "" : templatefile(
       "${path.module}/templates/hcloud-csi.yaml.tpl",
       {
-        version = local.csi_version
-        values  = indent(4, trimspace(var.hetzner_csi_values))
-    })
+        version = coalesce(local.csi_version, "*")
+        values  = indent(4, trimspace(local.hetzner_csi_values))
+      }
+    )
     destination = "/var/post_install/hcloud-csi.yaml"
   }
 
@@ -349,7 +397,14 @@ resource "null_resource" "kustomization" {
       EOT
       ]
       ,
-
+      var.hetzner_ccm_use_helm ? [
+        "echo 'Remove legacy ccm manifests if they exist'",
+        "kubectl delete serviceaccount,deployment -n kube-system --field-selector 'metadata.name=hcloud-cloud-controller-manager' --selector='app.kubernetes.io/managed-by!=Helm'",
+        "kubectl delete clusterrolebinding -n kube-system --field-selector 'metadata.name=system:hcloud-cloud-controller-manager' --selector='app.kubernetes.io/managed-by!=Helm'",
+        ] : [
+        "echo 'Uninstall helm ccm manifests if they exist'",
+        "kubectl delete --ignore-not-found -n kube-system helmchart.helm.cattle.io/hcloud-cloud-controller-manager",
+      ],
       [
         # Ready, set, go for the kustomization
         "kubectl apply -k /var/post_install",

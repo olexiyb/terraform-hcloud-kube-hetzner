@@ -71,6 +71,12 @@ variable "ssh_additional_public_keys" {
   default     = []
 }
 
+variable "authentication_config" {
+  description = "Strucutred authentication configuration. This can be used to define external authentication providers."
+  type        = string
+  default     = ""
+}
+
 variable "hcloud_ssh_key_id" {
   description = "If passed, a key already registered within hetzner is used. Otherwise, a new one will be created by the module."
   type        = string
@@ -138,7 +144,7 @@ variable "service_ipv4_cidr" {
 variable "cluster_dns_ipv4" {
   description = "Internal Service IPv4 address of core-dns."
   type        = string
-  default     = "10.43.0.10"
+  default     = null
 }
 
 variable "load_balancer_location" {
@@ -205,6 +211,9 @@ variable "control_plane_nodepools" {
     selinux                    = optional(bool, true)
     placement_group_compat_idx = optional(number, 0)
     placement_group            = optional(string, null)
+    disable_ipv4               = optional(bool, false)
+    disable_ipv6               = optional(bool, false)
+    network_id                 = optional(number, 0)
   }))
   default = []
   validation {
@@ -227,6 +236,7 @@ variable "agent_nodepools" {
     location                   = string
     backups                    = optional(bool)
     floating_ip                = optional(bool)
+    floating_ip_rdns           = optional(string, null)
     labels                     = list(string)
     taints                     = list(string)
     longhorn_volume_size       = optional(number)
@@ -237,11 +247,15 @@ variable "agent_nodepools" {
     placement_group_compat_idx = optional(number, 0)
     placement_group            = optional(string, null)
     count                      = optional(number, null)
+    disable_ipv4               = optional(bool, false)
+    disable_ipv6               = optional(bool, false)
+    network_id                 = optional(number, 0)
     nodes = optional(map(object({
       server_type                = optional(string)
       location                   = optional(string)
       backups                    = optional(bool)
       floating_ip                = optional(bool)
+      floating_ip_rdns           = optional(string, null)
       labels                     = optional(list(string))
       taints                     = optional(list(string))
       longhorn_volume_size       = optional(number)
@@ -282,7 +296,7 @@ variable "agent_nodepools" {
   }
 
   validation {
-    condition = sum([for agent_nodepool in var.agent_nodepools : length(coalesce(agent_nodepool.nodes, {})) + coalesce(agent_nodepool.count, 0)]) <= 100
+    condition = length(var.agent_nodepools) == 0 ? true : sum([for agent_nodepool in var.agent_nodepools : length(coalesce(agent_nodepool.nodes, {})) + coalesce(agent_nodepool.count, 0)]) <= 100
     # 154 because the private ip is derived from tonumber(key) + 101. See private_ipv4 in agents.tf
     error_message = "Hetzner does not support networks with more than 100 servers."
   }
@@ -297,8 +311,8 @@ variable "cluster_autoscaler_image" {
 
 variable "cluster_autoscaler_version" {
   type        = string
-  default     = "v1.30.1"
-  description = "Version of Kubernetes Cluster Autoscaler for Hetzner Cloud. Should be aligned with Kubernetes version"
+  default     = "v1.32.0"
+  description = "Version of Kubernetes Cluster Autoscaler for Hetzner Cloud. Should be aligned with Kubernetes version. Available versions for the official image can be found at https://explore.ggcr.dev/?repo=registry.k8s.io%2Fautoscaling%2Fcluster-autoscaler."
 }
 
 variable "cluster_autoscaler_log_level" {
@@ -374,14 +388,20 @@ variable "autoscaler_taints" {
 
 variable "hetzner_ccm_version" {
   type        = string
-  default     = ""
-  description = "Version of Kubernetes Cloud Controller Manager for Hetzner Cloud."
+  default     = null
+  description = "Version of Kubernetes Cloud Controller Manager for Hetzner Cloud. See https://github.com/hetznercloud/hcloud-cloud-controller-manager/releases for the available versions."
+}
+
+variable "hetzner_ccm_use_helm" {
+  type        = bool
+  default     = false
+  description = "Whether to use the helm chart for the Hetzner CCM or the legacy manifest which is the default."
 }
 
 variable "hetzner_csi_version" {
   type        = string
   default     = null
-  description = "Version of Container Storage Interface driver for Hetzner Cloud."
+  description = "Version of Container Storage Interface driver for Hetzner Cloud. See https://github.com/hetznercloud/csi-driver/releases for the available versions."
 }
 
 variable "hetzner_csi_values" {
@@ -473,6 +493,30 @@ variable "traefik_resource_limits" {
   description = "Should traefik enable default resource requests and limits. Default values are requests: 100m & 50Mi and limits: 300m & 150Mi."
 }
 
+variable "traefik_resource_values" {
+  type = object({
+    requests = object({
+      cpu    = string
+      memory = string
+    })
+    limits = object({
+      cpu    = string
+      memory = string
+    })
+  })
+  default = {
+    requests = {
+      memory = "50Mi"
+      cpu    = "100m"
+    }
+    limits = {
+      memory = "150Mi"
+      cpu    = "300m"
+    }
+  }
+  description = "Requests and limits for Traefik."
+}
+
 variable "traefik_additional_ports" {
   type = list(object({
     name        = string
@@ -498,7 +542,7 @@ variable "traefik_additional_trusted_ips" {
 variable "traefik_version" {
   type        = string
   default     = ""
-  description = "Version of Traefik helm chart."
+  description = "Version of Traefik helm chart. See https://github.com/traefik/traefik-helm-chart/releases for the available versions."
 }
 
 variable "traefik_values" {
@@ -510,7 +554,7 @@ variable "traefik_values" {
 variable "nginx_version" {
   type        = string
   default     = ""
-  description = "Version of Nginx helm chart."
+  description = "Version of Nginx helm chart. See https://github.com/kubernetes/ingress-nginx?tab=readme-ov-file#supported-versions-table for the available versions."
 }
 
 variable "nginx_values" {
@@ -563,13 +607,19 @@ variable "enable_metrics_server" {
 
 variable "initial_k3s_channel" {
   type        = string
-  default     = "v1.29" # Please update kube.tf.example too when changing this variable
-  description = "Allows you to specify an initial k3s channel."
+  default     = "v1.31" # Please update kube.tf.example too when changing this variable
+  description = "Allows you to specify an initial k3s channel. See https://update.k3s.io/v1-release/channels for available channels."
 
   validation {
     condition     = contains(["stable", "latest", "testing", "v1.16", "v1.17", "v1.18", "v1.19", "v1.20", "v1.21", "v1.22", "v1.23", "v1.24", "v1.25", "v1.26", "v1.27", "v1.28", "v1.29", "v1.30", "v1.31", "v1.32", "v1.33"], var.initial_k3s_channel)
     error_message = "The initial k3s channel must be one of stable, latest or testing, or any of the minor kube versions like v1.26."
   }
+}
+
+variable "install_k3s_version" {
+  type        = string
+  default     = ""
+  description = "Allows you to specify the k3s version (Example: v1.29.6+k3s2). Supersedes initial_k3s_channel. See https://github.com/k3s-io/k3s/releases for available versions."
 }
 
 variable "system_upgrade_enable_eviction" {
@@ -634,7 +684,7 @@ variable "cluster_name" {
 variable "base_domain" {
   type        = string
   default     = ""
-  description = "Base domain of the cluster, used for reserve dns."
+  description = "Base domain of the cluster, used for reverse dns."
 
   validation {
     condition     = can(regex("^(?:(?:(?:[A-Za-z0-9])|(?:[A-Za-z0-9](?:[A-Za-z0-9\\-]+)?[A-Za-z0-9]))+(\\.))+([A-Za-z]{2,})([\\/?])?([\\/?][A-Za-z0-9\\-%._~:\\/?#\\[\\]@!\\$&\\'\\(\\)\\*\\+,;=]+)?$", var.base_domain)) || var.base_domain == ""
@@ -720,8 +770,8 @@ variable "cilium_values" {
 
 variable "cilium_version" {
   type        = string
-  default     = "1.15.7"
-  description = "Version of Cilium."
+  default     = "1.17.0"
+  description = "Version of Cilium. See https://github.com/cilium/cilium/releases for the available versions."
 }
 
 variable "calico_values" {
@@ -809,7 +859,7 @@ variable "enable_csi_driver_smb" {
 variable "csi_driver_smb_version" {
   type        = string
   default     = "*"
-  description = "Version of csi_driver_smb."
+  description = "Version of csi_driver_smb. See https://github.com/kubernetes-csi/csi-driver-smb/releases for the available versions."
 }
 
 variable "csi_driver_smb_helmchart_bootstrap" {
@@ -844,8 +894,12 @@ variable "cert_manager_helmchart_bootstrap" {
 
 variable "cert_manager_values" {
   type        = string
-  default     = ""
-  description = "Additional helm values file to pass to Cert-Manager as 'valuesContent' at the HelmChart."
+  default     = <<EOT
+crds:
+  enabled: true
+  keep: true
+  EOT
+  description = "Additional helm values file to pass to Cert-Manager as 'valuesContent' at the HelmChart. Warning, the default value is only valid from cert-manager v1.15.0 onwards. For older versions, you need to set 'installCRDs: true'."
 }
 
 variable "enable_rancher" {
@@ -933,7 +987,7 @@ variable "rancher_values" {
 variable "kured_version" {
   type        = string
   default     = null
-  description = "Version of Kured."
+  description = "Version of Kured. See https://github.com/kubereboot/kured/releases for the available versions."
 }
 
 variable "kured_options" {
@@ -1018,6 +1072,12 @@ variable "extra_kustomize_parameters" {
   description = "All values will be passed to the `kustomization.tmp.yml` template."
 }
 
+variable "extra_kustomize_folder" {
+  type        = string
+  default     = "extra-manifests"
+  description = "Folder from where to upload extra manifests"
+}
+
 variable "create_kubeconfig" {
   type        = bool
   default     = true
@@ -1069,7 +1129,7 @@ variable "additional_tls_sans" {
 variable "calico_version" {
   type        = string
   default     = null
-  description = "Version of Calico."
+  description = "Version of Calico. See https://github.com/projectcalico/calico/releases for the available versions."
 }
 
 variable "k3s_exec_server_args" {
@@ -1117,7 +1177,7 @@ variable "ingress_target_namespace" {
 variable "enable_local_storage" {
   type        = bool
   default     = false
-  description = "Whether to enable or disable k3s local-storage."
+  description = "Whether to enable or disable k3s local-storage. Warning: when enabled, there will be two default storage classes: \"local-path\" and \"hcloud-volumes\"!"
 }
 
 variable "disable_selinux" {
@@ -1150,4 +1210,11 @@ variable "keep_disk_cp" {
   type        = bool
   default     = false
   description = "Whether to keep OS disks of nodes the same size when upgrading a control-plane node"
+}
+
+
+variable "sys_upgrade_controller_version" {
+  type        = string
+  default     = "v0.14.2"
+  description = "Version of the System Upgrade Controller for automated upgrades of k3s. See https://github.com/rancher/system-upgrade-controller/releases for the available versions."
 }

@@ -74,10 +74,11 @@ locals {
     kind       = "Kustomization"
     resources = concat(
       [
-        "ccm.yaml",
         "https://github.com/kubereboot/kured/releases/download/${local.kured_version}/kured-${local.kured_version}-dockerhub.yaml",
-        "https://raw.githubusercontent.com/rancher/system-upgrade-controller/9e7e45c1bdd528093da36be1f1f32472469005e6/manifests/system-upgrade-controller.yaml",
+        "https://github.com/rancher/system-upgrade-controller/releases/download/${var.sys_upgrade_controller_version}/system-upgrade-controller.yaml",
+        "https://github.com/rancher/system-upgrade-controller/releases/download/${var.sys_upgrade_controller_version}/crd.yaml"
       ],
+      var.hetzner_ccm_use_helm ? ["hcloud-ccm-helm.yaml"] : ["https://github.com/hetznercloud/hcloud-cloud-controller-manager/releases/download/${local.ccm_version}/ccm-networks.yaml"],
       var.disable_hetzner_csi ? [] : ["hcloud-csi.yaml"],
       lookup(local.ingress_controller_install_resources, var.ingress_controller, []),
       lookup(local.cni_install_resources, var.cni_plugin, []),
@@ -87,7 +88,7 @@ locals {
       var.enable_rancher ? ["rancher.yaml"] : [],
       var.rancher_registration_manifest_url != "" ? [var.rancher_registration_manifest_url] : []
     ),
-    patches = [
+    patches = concat([
       {
         target = {
           group     = "apps"
@@ -99,37 +100,31 @@ locals {
         patch = file("${path.module}/kustomize/system-upgrade-controller.yaml")
       },
       {
-        target = {
-          group     = "apps"
-          version   = "v1"
-          kind      = "Deployment"
-          name      = "system-upgrade-controller"
-          namespace = "system-upgrade"
-        }
-        patch = <<-EOF
-          - op: replace
-            path: /spec/template/spec/containers/0/image
-            value: rancher/system-upgrade-controller:v0.13.4
-        EOF
-      },
-      {
         path = "kured.yaml"
-      },
-      {
-        path = "ccm.yaml"
       }
-    ]
+      ],
+      var.hetzner_ccm_use_helm ? [] : [{ path = "ccm.yaml" }]
+    )
   })
 
   apply_k3s_selinux = ["/sbin/semodule -v -i /usr/share/selinux/packages/k3s.pp"]
   swap_node_label   = ["node.kubernetes.io/server-swap=enabled"]
 
-  install_k3s_server = concat(local.common_pre_install_k3s_commands, [
-    "curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_CHANNEL=${var.initial_k3s_channel} INSTALL_K3S_EXEC='server ${var.k3s_exec_server_args}' sh -"
-  ], (var.disable_selinux ? [] : local.apply_k3s_selinux), local.common_post_install_k3s_commands)
-  install_k3s_agent = concat(local.common_pre_install_k3s_commands, [
-    "curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_CHANNEL=${var.initial_k3s_channel} INSTALL_K3S_EXEC='agent ${var.k3s_exec_agent_args}' sh -"
-  ], (var.disable_selinux ? [] : local.apply_k3s_selinux), local.common_post_install_k3s_commands)
+  k3s_install_command = "curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_SELINUX_RPM=true %{if var.install_k3s_version == ""}INSTALL_K3S_CHANNEL=${var.initial_k3s_channel}%{else}INSTALL_K3S_VERSION=${var.install_k3s_version}%{endif} INSTALL_K3S_EXEC='%s' sh -"
+
+  install_k3s_server = concat(
+    local.common_pre_install_k3s_commands,
+    [format(local.k3s_install_command, "server ${var.k3s_exec_server_args}")],
+    var.disable_selinux ? [] : local.apply_k3s_selinux,
+    local.common_post_install_k3s_commands
+  )
+
+  install_k3s_agent = concat(
+    local.common_pre_install_k3s_commands,
+    [format(local.k3s_install_command, "agent ${var.k3s_exec_agent_args}")],
+    var.disable_selinux ? [] : local.apply_k3s_selinux,
+    local.common_post_install_k3s_commands
+  )
 
   control_plane_nodes = merge([
     for pool_index, nodepool_obj in var.control_plane_nodepools : {
@@ -147,7 +142,10 @@ locals {
         index : node_index
         selinux : nodepool_obj.selinux
         placement_group_compat_idx : nodepool_obj.placement_group_compat_idx,
-        placement_group : nodepool_obj.placement_group
+        placement_group : nodepool_obj.placement_group,
+        disable_ipv4 : nodepool_obj.disable_ipv4,
+        disable_ipv6 : nodepool_obj.disable_ipv6,
+        network_id : nodepool_obj.network_id,
       }
     }
   ]...)
@@ -161,6 +159,7 @@ locals {
         server_type : nodepool_obj.server_type,
         longhorn_volume_size : coalesce(nodepool_obj.longhorn_volume_size, 0),
         floating_ip : lookup(nodepool_obj, "floating_ip", false),
+        floating_ip_rdns : lookup(nodepool_obj, "floating_ip_rdns", false),
         location : nodepool_obj.location,
         labels : concat(local.default_agent_labels, nodepool_obj.swap_size != "" ? local.swap_node_label : [], nodepool_obj.labels),
         taints : concat(local.default_agent_taints, nodepool_obj.taints),
@@ -171,7 +170,10 @@ locals {
         index : node_index
         selinux : nodepool_obj.selinux
         placement_group_compat_idx : nodepool_obj.placement_group_compat_idx,
-        placement_group : nodepool_obj.placement_group
+        placement_group : nodepool_obj.placement_group,
+        disable_ipv4 : nodepool_obj.disable_ipv4,
+        disable_ipv6 : nodepool_obj.disable_ipv6,
+        network_id : nodepool_obj.network_id,
       }
     }
   ]...)
@@ -186,6 +188,7 @@ locals {
           server_type : nodepool_obj.server_type,
           longhorn_volume_size : coalesce(nodepool_obj.longhorn_volume_size, 0),
           floating_ip : lookup(nodepool_obj, "floating_ip", false),
+          floating_ip_rdns : lookup(nodepool_obj, "floating_ip_rdns", false),
           location : nodepool_obj.location,
           labels : concat(local.default_agent_labels, nodepool_obj.swap_size != "" ? local.swap_node_label : [], nodepool_obj.labels),
           taints : concat(local.default_agent_taints, nodepool_obj.taints),
@@ -197,6 +200,9 @@ locals {
           placement_group_compat_idx : nodepool_obj.placement_group_compat_idx,
           placement_group : nodepool_obj.placement_group,
           index : floor(tonumber(node_key)),
+          disable_ipv4 : nodepool_obj.disable_ipv4,
+          disable_ipv6 : nodepool_obj.disable_ipv6,
+          network_id : nodepool_obj.network_id,
         },
         { for key, value in node_obj : key => value if value != null },
         {
@@ -221,10 +227,12 @@ locals {
   # The first two subnets are respectively the default subnet 10.0.0.0/16 use for potientially anything and 10.1.0.0/16 used for control plane nodes.
   # the rest of the subnets are for agent nodes in each nodepools.
   network_ipv4_subnets = [for index in range(256) : cidrsubnet(var.network_ipv4_cidr, 8, index)]
+  # By convention the DNS service (usually core-dns) is assigned the 10th IP address in the service CIDR block
+  cluster_dns_ipv4 = var.cluster_dns_ipv4 != null ? var.cluster_dns_ipv4 : cidrhost(var.service_ipv4_cidr, 10)
 
   # if we are in a single cluster config, we use the default klipper lb instead of Hetzner LB
   control_plane_count    = sum([for v in var.control_plane_nodepools : v.count])
-  agent_count            = sum([for v in var.agent_nodepools : length(coalesce(v.nodes, {})) + coalesce(v.count, 0)])
+  agent_count            = length(var.agent_nodepools) > 0 ? sum([for v in var.agent_nodepools : length(coalesce(v.nodes, {})) + coalesce(v.count, 0)]) : 0
   autoscaler_max_count   = length(var.autoscaler_nodepools) > 0 ? sum([for v in var.autoscaler_nodepools : v.max_nodes]) : 0
   is_single_node_cluster = (local.control_plane_count + local.agent_count + local.autoscaler_max_count) == 1
 
@@ -282,6 +290,17 @@ locals {
         source_ips  = var.firewall_ssh_source
       },
     ],
+    var.ssh_port != null &&
+    var.firewall_ssh_source == null ? [
+      # Allow all traffic to the ssh port
+      {
+        description = "Allow Incoming SSH Traffic"
+        direction   = "in"
+        protocol    = "tcp"
+        port        = var.ssh_port
+        source_ips  = ["0.0.0.0/0", "::/0"]
+      },
+    ] : [],
     var.firewall_kube_api_source == null ? [] : [
       {
         description = "Allow Incoming Requests to Kube API Server"
@@ -436,39 +455,7 @@ locals {
   kube_controller_manager_arg = "flex-volume-plugin-dir=/var/lib/kubelet/volumeplugins"
   flannel_iface               = "eth1"
 
-  # Not to be confused with the other helm values, this is used for the calico.yaml kustomize patch
-  # It also serves as a stub for a potential future use via helm values
-  ccm_values = var.ccm_values != "" ? var.ccm_values : <<EOT
-args:
-  leader-elect: "false"
-  allocate-node-cidrs: "true"
-%{if local.using_klipper_lb~}
-  secure-port: 10288
-%{endif~}
-nodeSelector:
-  node-role.kubernetes.io/master: "true"
-networking:
-  enabled: true
-  clusterCIDR: ${var.cluster_ipv4_cidr}
-env:
-  HCLOUD_LOAD_BALANCERS_LOCATION:
-    value: "${var.load_balancer_location}"
-  HCLOUD_LOAD_BALANCERS_USE_PRIVATE_IP:
-    value: "true"
-  HCLOUD_LOAD_BALANCERS_ENABLED:
-    value: "${!local.using_klipper_lb}"
-  HCLOUD_LOAD_BALANCERS_DISABLE_PRIVATE_INGRESS:
-    value: "true"
-%{if local.using_hcloud_robot~}
-  # see https://github.com/hetznercloud/hcloud-cloud-controller-manager/issues/630#issuecomment-2039136344
-  HCLOUD_NETWORK_ROUTES_ENABLED:
-    value: "false"
-  HCLOUD_DEBUG:
-    value: "0"
-%{endif~}
-robot:
-  enabled: ${local.using_hcloud_robot}
-  EOT
+  kube_apiserver_arg = var.authentication_config != "" ? ["authentication-config=/etc/rancher/k3s/authentication_config.yaml"] : []
 
   cilium_values = var.cilium_values != "" ? var.cilium_values : <<EOT
 # Enable Kubernetes host-scope IPAM mode (required for K3s + Hetzner CCM)
@@ -515,6 +502,8 @@ bpf:
 %{if var.enable_wireguard}
 encryption:
   enabled: true
+  # Enable node encryption for node-to-node traffic
+  nodeEncryption: true
   type: wireguard
 %{endif~}
 %{if var.cilium_egress_gateway_enabled}
@@ -579,6 +568,9 @@ persistence:
   EOT
 
   csi_driver_smb_values = var.csi_driver_smb_values != "" ? var.csi_driver_smb_values : <<EOT
+  EOT
+
+  hetzner_csi_values = var.hetzner_csi_values != "" ? var.hetzner_csi_values : <<EOT
   EOT
 
   nginx_values = var.nginx_values != "" ? var.nginx_values : <<EOT
@@ -688,8 +680,11 @@ service:
 ports:
   web:
 %{if var.traefik_redirect_to_https~}
-    redirectTo:
-      port: websecure
+    redirections:
+      entryPoint:
+        to: websecure
+        scheme: https
+        permanent: true
 %{endif~}
 %{if !local.using_klipper_lb~}
     proxyProtocol:
@@ -761,11 +756,11 @@ additionalArguments:
 %{if var.traefik_resource_limits~}
 resources:
   requests:
-    cpu: "100m"
-    memory: "50Mi"
+    cpu: "${var.traefik_resource_values.requests.cpu}"
+    memory: "${var.traefik_resource_values.requests.memory}"
   limits:
-    cpu: "300m"
-    memory: "150Mi"
+    cpu: "${var.traefik_resource_values.limits.cpu}"
+    memory: "${var.traefik_resource_values.limits.memory}"
 %{endif~}
 %{if var.traefik_autoscaling~}
 autoscaling:
@@ -786,7 +781,9 @@ global:
   EOT
 
 cert_manager_values = var.cert_manager_values != "" ? var.cert_manager_values : <<EOT
-installCRDs: true
+crds:
+  enabled: true
+  keep: true
   EOT
 
 kured_options = merge({
@@ -839,6 +836,28 @@ else
 fi
 EOF
 
+k3s_authentication_config_update_script = <<EOF
+DATE=`date +%Y-%m-%d_%H-%M-%S`
+if cmp -s /tmp/authentication_config.yaml /etc/rancher/k3s/authentication_config.yaml; then
+  echo "No update required to the authentication_config.yaml file"
+else
+  if [ -f "/etc/rancher/k3s/authentication_config.yaml" ]; then
+    echo "Backing up /etc/rancher/k3s/authentication_config.yaml to /tmp/authentication_config_$DATE.yaml"
+    cp /etc/rancher/k3s/authentication_config.yaml /tmp/authentication_config_$DATE.yaml
+  fi
+  echo "Updated authentication_config.yaml detected, restart of k3s service required"
+  cp /tmp/authentication_config.yaml /etc/rancher/k3s/authentication_config.yaml
+  if systemctl is-active --quiet k3s; then
+    systemctl restart k3s || (echo "Error: Failed to restart k3s. Restoring /etc/rancher/k3s/authentication_config.yaml from backup" && cp /tmp/authentication_config_$DATE.yaml /etc/rancher/k3s/authentication_config.yaml && systemctl restart k3s)
+  elif systemctl is-active --quiet k3s-agent; then
+    systemctl restart k3s-agent || (echo "Error: Failed to restart k3s-agent. Restoring /etc/rancher/k3s/authentication_config.yaml from backup" && cp /tmp/authentication_config_$DATE.yaml /etc/rancher/k3s/authentication_config.yaml && systemctl restart k3s-agent)
+  else
+    echo "No active k3s or k3s-agent service found"
+  fi
+  echo "k3s service or k3s-agent service (re)started successfully"
+fi
+EOF
+
 cloudinit_write_files_common = <<EOT
 # Script to rename the private interface to eth1 and unify NetworkManager connection naming
 - path: /etc/cloud/rename_interface.sh
@@ -848,26 +867,58 @@ cloudinit_write_files_common = <<EOT
 
     sleep 11
 
-    INTERFACE=$(ip link show | awk '/^3:/{print $2}' | sed 's/://g')
+    # Take row beginning with 3 if exists, 2 otherwise (if only a private ip)
+    INTERFACE=$(ip link show | grep -v 'flannel' | awk 'BEGIN{l3=""}; /^3:/{l3=$2}; /^2:/{l2=$2}; END{if(l3!="") print l3; else print l2}' | sed 's/://g')
     MAC=$(cat /sys/class/net/$INTERFACE/address)
 
     cat <<EOF > /etc/udev/rules.d/70-persistent-net.rules
     SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", ATTR{address}=="$MAC", NAME="eth1"
     EOF
 
+    if [ "$INTERFACE" = "eth1" ]; then
+      echo "Interface $INTERFACE already points to $MAC, skipping..."
+      exit 0
+    fi
+
     ip link set $INTERFACE down
     ip link set $INTERFACE name eth1
     ip link set eth1 up
 
-    eth0_connection=$(nmcli -g GENERAL.CONNECTION device show eth0)
-    nmcli connection modify "$eth0_connection" \
-      con-name eth0 \
-      connection.interface-name eth0
+    myrepeat () {
+        # Current time + 300 seconds (5 minutes)
+        local END_SECONDS=$((SECONDS + 300))
+        while true; do
+            >&2 echo "loop"
+            if (( "$SECONDS" > "$END_SECONDS" )); then
+                >&2 echo "timeout reached"
+                exit 1
+            fi
+            # run command and check return code
+            if $@ ; then
+                >&2 echo "break"
+                break
+            else
+                >&2 echo "got failure exit code, repeating"
+                sleep 0.5
+            fi
+        done
+    }
 
-    eth1_connection=$(nmcli -g GENERAL.CONNECTION device show eth1)
-    nmcli connection modify "$eth1_connection" \
-      con-name eth1 \
-      connection.interface-name eth1
+    myrename () {
+        local eth="$1"
+        local eth_connection
+
+        # In case of a private-only network, eth0 may not exist
+        if ip link show "$eth" &>/dev/null; then
+            eth_connection=$(nmcli -g GENERAL.CONNECTION device show "$eth" || echo '')
+            nmcli connection modify "$eth_connection" \
+              con-name "$eth" \
+              connection.interface-name "$eth"
+        fi
+    }
+
+    myrepeat myrename eth0
+    myrepeat myrename eth1
 
     systemctl restart NetworkManager
   permissions: "0744"
@@ -954,7 +1005,8 @@ cloudinit_write_files_common = <<EOT
     allow container_t { cert_t container_log_t }:dir read;
     allow container_t { cert_t container_log_t }:lnk_file read;
     allow container_t cert_t:file { read open };
-    allow container_t container_var_lib_t:file { create open read write rename lock setattr getattr unlink };
+    allow container_t container_var_lib_t:dir { add_name remove_name write read create };
+    allow container_t container_var_lib_t:file { append create open read write rename lock setattr getattr unlink };
     allow container_t etc_t:dir { add_name remove_name write create setattr watch };
     allow container_t etc_t:file { create setattr unlink write };
     allow container_t etc_t:sock_file { create unlink };
@@ -970,8 +1022,8 @@ cloudinit_write_files_common = <<EOT
     allow container_t kernel_t:system module_request;
     allow container_t var_log_t:dir { add_name write remove_name watch read };
     allow container_t var_log_t:file { create lock open read setattr write unlink getattr };
-    allow container_t var_lib_t:dir { add_name write read };
-    allow container_t var_lib_t:file { create lock open read setattr write getattr };
+    allow container_t var_lib_t:dir { add_name remove_name write read create };
+    allow container_t var_lib_t:file { append create open read write rename lock setattr getattr unlink };
     allow container_t proc_t:filesystem associate;
     allow container_t self:bpf map_create;
     allow container_t self:io_uring sqpoll;
@@ -985,22 +1037,6 @@ cloudinit_write_files_common = <<EOT
 - content: ${base64encode(var.k3s_registries)}
   encoding: base64
   path: /etc/rancher/k3s/registries.yaml
-%{endif}
-
-# Apply new DNS config
-%{if length(var.dns_servers) > 0}
-# Set prepare for manual dns config
-- content: |
-    [main]
-    dns=none
-  path: /etc/NetworkManager/conf.d/dns.conf
-
-- content: |
-    %{for server in var.dns_servers~}
-    nameserver ${server}
-    %{endfor}
-  path: /etc/resolv.conf
-  permissions: '0644'
 %{endif}
 EOT
 
@@ -1024,11 +1060,6 @@ cloudinit_runcmd_common = <<EOT
 # Disable rebootmgr service as we use kured instead
 - [systemctl, disable, '--now', 'rebootmgr.service']
 
-%{if length(var.dns_servers) > 0}
-# Set the dns manually
-- [systemctl, 'reload', 'NetworkManager']
-%{endif}
-
 # Bounds the amount of logs that can survive on the system
 - [sed, '-i', 's/#SystemMaxUse=/SystemMaxUse=3G/g', /etc/systemd/journald.conf]
 - [sed, '-i', 's/#MaxRetentionSec=/MaxRetentionSec=1week/g', /etc/systemd/journald.conf]
@@ -1046,9 +1077,15 @@ cloudinit_runcmd_common = <<EOT
 # Make sure the network is up
 - [systemctl, restart, NetworkManager]
 - [systemctl, status, NetworkManager]
-- [ip, route, add, default, via, '172.31.1.1', dev, 'eth0']
 
 # Cleanup some logs
 - [truncate, '-s', '0', '/var/log/audit/audit.log']
+
+# Add logic to truly disable SELinux if disable_selinux = true.
+# We'll do it by appending to cloudinit_runcmd_common.
+%{if var.disable_selinux}
+- [sed, '-i', '-E', 's/^SELINUX=[a-z]+/SELINUX=disabled/', '/etc/selinux/config']
+- [setenforce, '0']
+%{endif}
 EOT
 }
