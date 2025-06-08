@@ -246,6 +246,7 @@ resource "null_resource" "kustomization" {
       {
         version             = coalesce(local.ccm_version, "*")
         using_klipper_lb    = local.using_klipper_lb
+        using_hcloud_robot  = local.using_hcloud_robot
         default_lb_location = var.load_balancer_location
 
       }
