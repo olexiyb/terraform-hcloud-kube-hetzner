@@ -1031,7 +1031,7 @@ variable "dns_servers" {
 
 variable "address_for_connectivity_test" {
   type        = string
-  default     = "1.1.1.1"
+  default     = "google.com"
   description = "Before installing k3s, we actually verify that there is internet connectivity. By default we ping 1.1.1.1, but if you use a proxy, you may simply want to ping that proxy instead (assuming that the proxy has its own checks for internet connectivity)."
 }
 
