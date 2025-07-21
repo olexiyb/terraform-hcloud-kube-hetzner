@@ -607,7 +607,7 @@ persistence:
   nginx_values = var.nginx_values != "" ? var.nginx_values : <<EOT
 controller:
   watchIngressWithoutClass: "true"
-  kind: "DaemonSet"
+  kind: "Deployment"
   replicaCount: ${local.ingress_replica_count}
   config:
     "use-forwarded-headers": "true"
