@@ -607,11 +607,12 @@ persistence:
   nginx_values = var.nginx_values != "" ? var.nginx_values : <<EOT
 controller:
   watchIngressWithoutClass: "true"
-  kind: "Deployment"
+  kind: "DaemonSet"
   replicaCount: ${local.ingress_replica_count}
   config:
     "use-forwarded-headers": "true"
     "compute-full-forwarded-for": "true"
+    "strict-validate-path-type": "false"
     "use-proxy-protocol": "${!local.using_klipper_lb}"
 %{if !local.using_klipper_lb~}
   service:
