@@ -616,6 +616,7 @@ controller:
     "use-proxy-protocol": "${!local.using_klipper_lb}"
 %{if !local.using_klipper_lb~}
   service:
+    externalTrafficPolicy: "Local"
     annotations:
       "load-balancer.hetzner.cloud/name": "${local.load_balancer_name}"
       "load-balancer.hetzner.cloud/use-private-ip": "true"
