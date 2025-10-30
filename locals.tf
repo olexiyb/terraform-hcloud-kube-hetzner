@@ -132,6 +132,7 @@ locals {
       for node_index in range(nodepool_obj.count) :
       format("%s-%s-%s", pool_index, node_index, nodepool_obj.name) => {
         nodepool_name : nodepool_obj.name,
+        server : nodepool_obj.server,
         server_type : nodepool_obj.server_type,
         location : nodepool_obj.location,
         labels : concat(local.default_control_plane_labels, nodepool_obj.swap_size != "" ? local.swap_node_label : [], nodepool_obj.labels),

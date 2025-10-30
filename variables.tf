@@ -199,6 +199,7 @@ variable "control_plane_nodepools" {
   description = "Number of control plane nodes."
   type = list(object({
     name                       = string
+    server                     = optional(string, "")
     server_type                = string
     location                   = string
     backups                    = optional(bool)
