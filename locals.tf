@@ -235,7 +235,7 @@ locals {
   autoscaler_max_count   = length(var.autoscaler_nodepools) > 0 ? sum([for v in var.autoscaler_nodepools : v.max_nodes]) : 0
   is_single_node_cluster = (local.control_plane_count + local.agent_count + local.autoscaler_max_count) == 1
 
-  using_klipper_lb = var.enable_klipper_metal_lb || local.is_single_node_cluster
+  using_klipper_lb = var.enable_klipper_metal_lb
 
   has_external_load_balancer = local.using_klipper_lb || var.ingress_controller == "none"
   load_balancer_name         = "${var.cluster_name}-${var.ingress_controller}"
