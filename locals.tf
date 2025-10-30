@@ -467,6 +467,7 @@ args:
 %{endif~}
 nodeSelector:
   node-role.kubernetes.io/master: "true"
+  "hetznerNodeType": "cloud"
 networking:
   enabled: true
   clusterCIDR: ${var.cluster_ipv4_cidr}
